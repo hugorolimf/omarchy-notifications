@@ -93,7 +93,9 @@ Item {
 
   // How many notifications the history directory keeps, and therefore how
   // many `showHistory` can replay.
-  readonly property int historyLimit: 10
+  // Island Inbox shows this history (the bell on the bar), so it keeps
+  // well more than a replay needs.
+  readonly property int historyLimit: 100
 
   readonly property int lowPopupDuration: 5000
   readonly property int normalPopupDuration: 8000
@@ -183,6 +185,13 @@ Item {
       return
     }
 
+    // With Island Notch installed and on, every notification shows in the
+    // notch and still lands in history (see showInNotch); without it, as a
+    // glass card.
+    if (notchOn) {
+      showInNotch(notification, snapshot)
+      return
+    }
     persistPopupFile(snapshot)
     watchForUpdates(notification, snapshot)
     // Qt.callLater avoids "QV4::Object::insertMember" crashes when a
@@ -191,10 +200,239 @@ Item {
       removePopupsByOriginalId(snapshot.originalId, NotificationLogic.popupFileName(snapshot))
       popupModel.insert(0, snapshot)
       // An update that arrived while the insert was deferred found no row to
-      // write to, and a property that already changed will not change again.
-      // Reading the object once the row exists catches up on it.
+      // write to; reading the object once the row exists catches up on it.
       service.refreshPopup(notification, snapshot.originalId, snapshot.timestamp)
     })
+  }
+
+  // Whether Island Notch is installed and enabled: checked at start and every
+  // minute, so installing or removing it switches notch and cards over.
+  property bool notchOn: false
+  Process {
+    id: notchProbe
+    command: ["omarchy", "plugin", "list", "--json"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var list = JSON.parse(String(text || "[]"))
+          service.notchOn = list.some(function(p) { return p.id === "io.github.hugorolimf.island" && p.enabled === true })
+        } catch (e) {}
+      }
+    }
+  }
+  Timer {
+    interval: 60000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!notchProbe.running) notchProbe.running = true
+  }
+
+  function isIphone(notification) {
+    var entry = ""
+    try { entry = String(notification.desktopEntry || "") } catch (e) { entry = "" }
+    return entry === "tether-gtk"
+      || NotificationLogic.stringHint(notification.hints, "x-kde-origin-name") === "iPhone"
+  }
+
+  // The notch (Island Notch) draws it: app, title, text, icon. A click runs
+  // its main action — an Omarchy exec hint, the "default" action, or for
+  // the iPhone (Tether) reply / open in app — and a pinned notification
+  // offers up to two more of its actions. It is held tracked while the notch
+  // can still be clicked (untracking closes it on the sender's side, and its
+  // actions with it), then filed into history like a silenced one; ephemeral
+  // ones (notify-send without an app, Omarchy's action toasts, transient)
+  // are only let go. Updates to it (a new track, progress) refresh the notch.
+  property var notchHeld: []
+
+  function notchPayload(notification, snapshot) {
+    var iphone = isIphone(notification)
+    var acts = []
+    try {
+      for (var i = 0; i < notification.actions.length; i++)
+        acts.push({ id: String(notification.actions[i].identifier), text: String(notification.actions[i].text || "") })
+    } catch (e) { acts = [] }
+    var ids = acts.map(function(a) { return a.id })
+    var invoke = function(id) { return ["omarchy-shell", "-q", "notifications", "invokeAction", String(snapshot.originalId), id] }
+
+    var title = snapshot.summary
+    var body = String(snapshot.body || "")
+    var copy = ""
+    if (ids.indexOf("copy-code") >= 0) {
+      var code = /(?:^|\D)(\d{4,8})(?!\d)/.exec(title + " " + body)
+      if (code) { copy = code[1]; body = title; title = code[1] }
+    }
+
+    var desktopEntry = ""
+    try { desktopEntry = String(notification.desktopEntry || "") } catch (e) { desktopEntry = "" }
+    // An action once the notification is gone (closed by its sender, or
+    // released) does nothing, so the click then falls back to the app's own
+    // window (omarchy-hyprland-focus-app by desktop entry or app name).
+    var focusApp = desktopEntry || snapshot.app || ""
+    var orFocus = function(id) {
+      return ["bash", "-c", "r=$(omarchy-shell notifications invokeAction \"$1\" \"$2\"); [ \"$r\" = ok ] || { [ -n \"$3\" ] && \"$OMARCHY_PATH/bin/omarchy-hyprland-focus-app\" \"$3\"; }",
+              "--", String(snapshot.originalId), id, iphone ? "" : focusApp]
+    }
+    var open = null
+    var main = ""
+    var openLabel = ""
+    var argv = NotificationLogic.parseExecArgv(snapshot.execArgv || "")
+    // iPhone: everything goes through the phone. Messages (SMS / iMessage)
+    // take a reply (the reply box); other apps only let the phone clear the
+    // notification (LIMPAR NO IPHONE below) — iOS offers no way to answer or
+    // open them from here. Tether's "open in a desktop app" is left out.
+    if (argv) open = argv
+    else if (ids.indexOf("default") >= 0) { open = orFocus("default"); main = "default" }
+
+    var extra = []
+    for (var k = 0; k < acts.length && extra.length < 2; k++) {
+      var a = acts[k]
+      if (a.id === main || a.id === "default" || a.id === "inline-reply" || a.id === "copy-code" || a.text === "") continue
+      if (iphone && (a.id === "reply" || a.id === "open-app")) continue
+      if (a.id === "inline-reply") continue
+      extra.push({ label: a.text, open: invoke(a.id) })
+    }
+    if (iphone && snapshot.phoneUid && snapshot.phoneClearable)
+      extra.unshift({ label: Qt.locale().name.indexOf("pt") === 0 ? "LIMPAR NO IPHONE" : "CLEAR ON IPHONE", open: ["omarchy-shell", "-q", "io.github.hugorolimf.iphone", "dismiss", String(snapshot.phoneUid)] })
+
+    var critical = false
+    try { critical = notification.urgency === NotificationUrgency.Critical } catch (e) { critical = false }
+    return {
+      uid: String(snapshot.originalId),
+      app: iphone ? (NotificationLogic.stringHint(notification.hints, "x-kde-display-appname") || "iPhone") : snapshot.app,
+      title: title, body: body,
+      icon: iphone ? (snapshot.appIcon || "tether") : (snapshot.image || snapshot.appIcon),
+      desktopEntry: desktopEntry, kind: iphone ? "iphone" : "",
+      copy: copy, open: open, actions: extra, urgent: critical,
+      openLabel: openLabel,
+      reply: notification.hasInlineReply === true,
+      replyHint: String(notification.inlineReplyPlaceholder || "")
+    }
+  }
+
+  // What history keeps: iPhone ones under the phone's app (WhatsApp, …) with
+  // its cached icon ("iphone:<app>", resolved by the Island Inbox), not Tether.
+  function filedSnapshot(notification, snapshot) {
+    if (!isIphone(notification)) return snapshot
+    var app = NotificationLogic.stringHint(notification.hints, "x-kde-display-appname") || "iPhone"
+    return Object.assign({}, snapshot, { app: app, appIcon: "iphone:" + app })
+  }
+
+  function sendToNotch(payload) {
+    Quickshell.execDetached(["omarchy-shell", "-q", "io.github.hugorolimf.island", "notify", JSON.stringify(payload)])
+  }
+
+  // ---- iPhone: groups. Tether's popup carries the phone's title (the
+  // sender) and text but not its subtitle, where iOS puts a WhatsApp group's
+  // name; Island iPhone keeps the phone's own copy of each notification in the
+  // runtime dir. An iPhone notification waits a moment for that copy, and
+  // when it has a subtitle it reads as the group, "Person: text".
+  property var iphoneQueue: []
+  FileView {
+    id: ancsRecent
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/island-iphone-recent.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+  }
+  Timer {
+    id: iphoneQueueTimer
+    interval: 400
+    onTriggered: {
+      var q = service.iphoneQueue
+      service.iphoneQueue = []
+      ancsRecent.reload()
+      for (var i = 0; i < q.length; i++) service.deliverToNotch(q[i].notification, service.withPhoneContext(q[i].notification, q[i].snapshot))
+    }
+  }
+
+  function withPhoneContext(notification, snapshot) {
+    var list = []
+    try { list = JSON.parse(ancsRecent.text() || "[]") } catch (e) { list = [] }
+    var app = NotificationLogic.stringHint(notification.hints, "x-kde-display-appname")
+    var title = String(snapshot.summary || "")
+    var body = String(snapshot.body || "")
+    var now = Date.now()
+    for (var i = list.length - 1; i >= 0; i--) {
+      var n = list[i]
+      if (!n || now - Number(n.at || 0) > 30000) continue
+      if (app && n.app !== app) continue
+      if (n.title !== title) continue
+      if (n.body && body && body.indexOf(n.body.slice(0, 40)) !== 0) continue
+      var sub = String(n.subtitle || "").trim()
+      var phone = { phoneUid: Number(n.uid || 0), phoneClearable: n.clearable === true }
+      if (!sub || sub === title) return Object.assign({}, snapshot, phone)
+      return Object.assign({}, snapshot, phone, { summary: sub, body: title + ": " + body })
+    }
+    return snapshot
+  }
+
+  function showInNotch(notification, snapshot) {
+    if (isIphone(notification)) {
+      var q = iphoneQueue.slice()
+      q.push({ notification: notification, snapshot: snapshot })
+      iphoneQueue = q
+      iphoneQueueTimer.restart()
+      return
+    }
+    deliverToNotch(notification, snapshot)
+  }
+
+  function deliverToNotch(notification, snapshot) {
+    sendToNotch(notchPayload(notification, snapshot))
+    var resend = function() {
+      if (service.liveRefs[snapshot.originalId] !== notification) return
+      var fresh = null
+      try { fresh = NotificationLogic.replacementSnapshot(notification, snapshot.originalId, snapshot.timestamp) } catch (e) { fresh = null }
+      if (!fresh) return
+      service.sendToNotch(service.notchPayload(notification, fresh))
+      if (!service.isEphemeral(notification)) service.writeHistoryFile(service.filedSnapshot(notification, fresh), null)
+    }
+    try {
+      notification.summaryChanged.connect(function() { Qt.callLater(resend) })
+      notification.bodyChanged.connect(function() { Qt.callLater(resend) })
+    } catch (e) {}
+    // Into history at once (the bell's panel shows it right away); held
+    // tracked meanwhile only so a click on the notch still reaches it.
+    if (!isEphemeral(notification)) writeHistoryFile(filedSnapshot(notification, snapshot), null)
+    var held = notchHeld.slice()
+    // 10 min: long enough for a click, a reply or the bell's panel later on
+    held.push({ notification: notification, snapshot: snapshot, due: Date.now() + 600000 })
+    notchHeld = held
+  }
+
+  function invokeAction(originalId, identifier) {
+    var ref = liveRefs[originalId]
+    if (!ref) return "gone"
+    try {
+      for (var i = 0; i < ref.actions.length; i++) {
+        if (String(ref.actions[i].identifier) === identifier) {
+          ref.actions[i].invoke()
+          return "ok"
+        }
+      }
+    } catch (e) {
+      return "gone"
+    }
+    return "none"
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    running: service.notchHeld.length > 0
+    onTriggered: {
+      var now = Date.now()
+      var keep = []
+      var due = []
+      for (var i = 0; i < service.notchHeld.length; i++) {
+        var h = service.notchHeld[i]
+        if (h.due <= now) due.push(h)
+        else keep.push(h)
+      }
+      service.notchHeld = keep
+      for (var j = 0; j < due.length; j++) service.releaseSilenced(due[j].notification, due[j].snapshot.originalId)
+    }
   }
 
   // Persist a silenced notification, held tracked until its content is
@@ -908,8 +1146,11 @@ Item {
     }
 
     // Replay the notifications that have been moved into the history dir.
+    // Omarchy's "notification history" key opens the bell's panel
+    // (io.github.hugorolimf.inbox) instead of replaying old toasts.
     function showHistory(): string {
-      return service.showRecentHistory()
+      Quickshell.execDetached(["omarchy-shell", "-q", "io.github.hugorolimf.inbox", "toggle"])
+      return "ok"
     }
 
     // `clear` forgets the recorded history; the toasts on screen stay put.
@@ -953,6 +1194,20 @@ Item {
       return hit ? "ok" : "none"
     }
 
+    // Answer a notification that offers a reply field (the notch's reply box).
+    function reply(id: string, text: string): string {
+      var ref = service.liveRefs[id]
+      if (!ref || !ref.hasInlineReply) return "gone"
+      try { ref.sendInlineReply(String(text || "")) } catch (e) { return "error" }
+      return "ok"
+    }
+
+    // Run one action of a live notification, used by the notch (Island Notch)
+    // for the iPhone notifications it shows instead of a toast.
+    function invokeAction(id: string, identifier: string): string {
+      return service.invokeAction(id, String(identifier || ""))
+    }
+
     function ping(): string { return "ok" }
   }
 
@@ -966,6 +1221,9 @@ Item {
     bodyMarkupSupported: true
     bodyHyperlinksSupported: true
     persistenceSupported: true
+    // Senders may then offer a reply field (Tether: SMS / iMessage replies go
+    // out through the iPhone); the notch draws it on a pinned notification.
+    inlineReplySupported: true
 
     onNotification: function(notification) {
       service.handleNotification(notification)

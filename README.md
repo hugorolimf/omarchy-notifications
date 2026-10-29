@@ -20,6 +20,13 @@ Banners slide in from the edge, stack up, and glide out of the way, on real glas
 - 🧊 **Real Liquid Glass** behind each card when the
   [Liquid Glass](https://github.com/fasi96/omarchy-liquid-glass) plugin is
   installed. Without it, the cards switch to a solid plate so text stays readable.
+- 🏝️ **Or in the notch.** With [Island Notch](https://github.com/hugorolimf/omarchy-island-notch)
+  installed, every notification shows in the notch instead (expanded long enough to
+  read, then a one-line mini view; hover to expand, click to keep it with its actions),
+  and still lands in history. Remove the notch and the glass cards come back.
+- 📱 **iPhone aware.** With [Island iPhone](https://github.com/hugorolimf/omarchy-island-iphone),
+  WhatsApp group names show as on the phone, verification codes get a copy button, and a
+  notification can be cleared on the iPhone itself.
 - 🔁 **Drop-in replacement** for Omarchy's built-in notifications. It is built on
   the official `omarchy.notifications` plugin, so history, Do Not Disturb, actions,
   `omarchy-notification-send` glyphs, images and urgency all keep working, and
