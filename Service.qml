@@ -1122,6 +1122,13 @@ Item {
 
   // ---------------------------------------------------- IPC
 
+  // Reads the private reply file handed over by replyFile().
+  FileView {
+    id: replyReader
+    blockLoading: true
+    printErrors: false
+  }
+
   IpcHandler {
     target: "notifications"
 
@@ -1200,6 +1207,20 @@ Item {
       if (!ref || !ref.hasInlineReply) return "gone"
       try { ref.sendInlineReply(String(text || "")) } catch (e) { return "error" }
       return "ok"
+    }
+
+    // Same reply, with the text in a private file (Island Notch writes it
+    // under $XDG_RUNTIME_DIR/island-notch) so it never sits in a process's
+    // arguments. The file is read here and removed.
+    function replyFile(id: string, path: string): string {
+      var p = String(path || "")
+      var dir = Quickshell.env("XDG_RUNTIME_DIR") + "/island-notch/"
+      if (p.indexOf(dir) !== 0 || p.indexOf("..") !== -1) return "error"
+      replyReader.path = p
+      var t = replyReader.text()
+      replyReader.path = ""
+      Quickshell.execDetached(["rm", "-f", "--", p])
+      return reply(id, t)
     }
 
     // Run one action of a live notification, used by the notch (Island Notch)
