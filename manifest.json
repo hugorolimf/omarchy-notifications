@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.hugorolimf.notifications",
+  "name": "Glass Notifications",
+  "author": "Hugo Rolim Filho",
+  "license": "MIT",
+  "homepage": "https://github.com/hugorolimf/omarchy-notifications",
+  "description": "macOS-style notification banners for Omarchy: they slide in from the edge, stack and glide out of the way, on real Liquid Glass. A drop-in replacement for the built-in notifications, with the same history, Do Not Disturb and actions",
+  "kinds": [
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.notifications"
+  },
+  "version": "1.0.0"
+}
