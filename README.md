@@ -1,3 +1,15 @@
+> [!IMPORTANT]
+> **This project is no longer maintained.** Glass Notifications became part of
+> [Island Notch](https://github.com/hugorolimf/omarchy-island-notch) (1.3 and later): the notch
+> is the notification server now, with Do Not Disturb, history, actions and inline replies.
+> If you use Glass Notifications, switch with:
+>
+> ```bash
+> omarchy plugin remove io.github.hugorolimf.notifications
+> omarchy plugin add https://github.com/hugorolimf/omarchy-island-notch --enable
+> omarchy plugin disable omarchy.notifications
+> ```
+
 <div align="center">
 
 # Glass Notifications
